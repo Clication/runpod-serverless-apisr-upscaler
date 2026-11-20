@@ -1,0 +1,13 @@
+{
+  "title": "APISR 4x Anime Upscaler",
+  "description": "Batch anime image super-resolution. Send image URLs under input.images to upscale with 4x APISR (CVPR 2024). Results are resized to 2048px wide by default and returned as base64 JPEG + AVIF, indexed in input order. Set options such as OUT_WIDTH, SPLIT_HORI_IMAGE_TO_HALF, and APISR_REPEAT_2X in the request input object.",
+  "type": "serverless",
+  "category": "image",
+  "iconUrl": "https://raw.githubusercontent.com/Kiteretsu77/APISR/main/__assets__/logo.png",
+  "config": {
+    "runsOn": "GPU",
+    "gpuIds": "AMPERE_24,ADA_24",
+    "gpuCount": 1,
+    "containerDiskInGb": 25
+  }
+}
