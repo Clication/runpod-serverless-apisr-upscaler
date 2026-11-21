@@ -1,6 +1,6 @@
 """
 RunPod Serverless handler
-APISR 4x -> optional repeated APISR 2x -> ImageMagick resize -> JPEG + AVIF
+APISR or Real-CUGAN 4x (native or two 2x passes) -> optional repeated 2x -> JPEG + AVIF
 
 輸入:
     {"input": ["https://.../a.jpg", "https://.../b.png"]}
@@ -42,14 +42,18 @@ WEIGHT_PATHS = {
     )
     for scale, env_name in ((4, "APISR_WEIGHT"), (2, "APISR_WEIGHT_2X"))
 }
+REAL_CUGAN_ROOT = os.environ.get("REAL_CUGAN_ROOT", "/app/Real-CUGAN")
 INITIAL_SCALE = 4
 EXTRA_SCALE = 2
+REAL_CUGAN_NOISE_LEVELS = {INITIAL_SCALE: (0, 3), EXTRA_SCALE: (0, 1, 2, 3)}
 TILE_OVERLAP = 16
 DL_TIMEOUT = (10, 90)
 
 
 @dataclass(frozen=True)
 class JobOptions:
+    upscaleType: str = "apisr"
+    noiseLevel: int = 0
     OUT_WIDTH: int = 2048
     SPLIT_HORI_IMAGE_TO_HALF: bool = False
     PRE_MAX_SIDE: int = 0
@@ -72,11 +76,15 @@ class JobOptions:
             if name not in job_input:
                 continue
             value = job_input[name]
-            if isinstance(default, bool):
+            if name == "upscaleType":
+                if value not in ("apisr", "real-cugan"):
+                    raise ValueError('upscaleType must be "apisr" or "real-cugan"')
+            elif isinstance(default, bool):
                 if type(value) is not bool:
                     raise ValueError(f"{name} must be a JSON boolean")
             else:
                 minimum, maximum = {
+                    "noiseLevel": (0, 3),
                     "PRE_MAX_SIDE": (0, None),
                     "TILE": (0, None),
                     "JPEG_QUALITY": (1, 100),
@@ -87,14 +95,36 @@ class JobOptions:
                     limits = f"between {minimum} and {maximum}" if maximum is not None else f">= {minimum}"
                     raise ValueError(f"{name} must be a JSON integer {limits}")
             values[name] = value
-        return cls(**values)
+        options = cls(**values)
+        if options.noiseLevel and options.upscaleType != "real-cugan":
+            raise ValueError('noiseLevel above 0 requires upscaleType "real-cugan"')
+        return options
+
+    @property
+    def initial_scale(self):
+        if self.upscaleType == "real-cugan" and self.noiseLevel not in REAL_CUGAN_NOISE_LEVELS[INITIAL_SCALE]:
+            return EXTRA_SCALE
+        return INITIAL_SCALE
 
 # ---------------------------------------------------------------- 模型
 _generators = {}
 _model_lock = threading.Lock()
 
 
-def _create_generator(device, scale, use_fp16):
+def _create_generator(device, scale, use_fp16, upscale_type, noise_level=0):
+    if upscale_type == "real-cugan":
+        variant = f"denoise{noise_level}x" if noise_level else "no-denoise"
+        weight_path = os.path.join(REAL_CUGAN_ROOT, f"up{scale}x-latest-{variant}.pth")
+        if not os.path.isfile(weight_path):
+            raise RuntimeError(f"找不到權重檔: {weight_path}")
+        sys.path.insert(0, REAL_CUGAN_ROOT)
+        try:
+            from upcunet_v3 import RealWaifuUpScaler
+        finally:
+            sys.path.remove(REAL_CUGAN_ROOT)
+
+        return RealWaifuUpScaler(scale, weight_path, half=use_fp16 and device == "cuda", device=device)
+
     weight_path = WEIGHT_PATHS[scale]
     if not os.path.exists(weight_path):
         raise RuntimeError(f"找不到權重檔: {weight_path}")
@@ -118,9 +148,9 @@ def _create_generator(device, scale, use_fp16):
     return generator
 
 
-def get_generator(scale, use_fp16):
-    """Load and cache RRDB models by scale and precision."""
-    key = (scale, use_fp16)
+def get_generator(scale, use_fp16, upscale_type, noise_level=0):
+    """Load and cache models by backend, scale, precision, and noise level."""
+    key = (upscale_type, scale, use_fp16, noise_level)
     with _model_lock:
         if key in _generators:
             return _generators[key]
@@ -129,15 +159,15 @@ def get_generator(scale, use_fp16):
             raise RuntimeError("CUDA is unavailable. Run this worker on a RunPod NVIDIA GPU instance.")
 
         print(
-            f"[apisr] torch={torch.__version__} CUDA={torch.version.cuda} "
+            f"[{upscale_type}] torch={torch.__version__} CUDA={torch.version.cuda} "
             f"GPU={torch.cuda.get_device_name(0)}",
             flush=True,
         )
-        generator = _create_generator("cuda", scale, use_fp16)
+        generator = _create_generator("cuda", scale, use_fp16, upscale_type, noise_level)
 
         torch.backends.cudnn.benchmark = True
         _generators[key] = generator
-        print(f"[apisr] {scale}x RRDB 模型已載入 (fp16={use_fp16})", flush=True)
+        print(f"[{upscale_type}] {scale}x 模型已載入 (fp16={use_fp16}, noiseLevel={noise_level})", flush=True)
         return generator
 
 
@@ -192,8 +222,35 @@ def _b64(path):
 
 
 # ---------------------------------------------------------------- 推論
+def _real_cugan_resolve(generator, img_bgr, scale, tile):
+    height, width = img_bgr.shape[:2]
+    # Upstream reflection padding requires each dimension to exceed 19 px.
+    # Use 22 so odd-sized inputs and the long-edge split also have room to pad.
+    if min(height, width) < 22:
+        img_bgr = cv2.copyMakeBorder(
+            img_bgr, 0, max(0, 22 - height), 0, max(0, 22 - width), cv2.BORDER_REPLICATE,
+        )
+
+    h, w = img_bgr.shape[:2]
+    tile_mode = 0
+    if tile and max(h, w) > tile:
+        # The native tiler shares attention statistics across tiles. Mode 1
+        # splits the long edge; higher modes require 128 px per short-edge division.
+        divisions = (max(h, w) + tile - 1) // tile
+        tile_mode = max(1, min(divisions, min(h, w) // 128))
+
+    rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+    out = generator(rgb, tile_mode=tile_mode, cache_mode=0, alpha=1)
+    return cv2.cvtColor(out[:height * scale, :width * scale], cv2.COLOR_RGB2BGR)
+
+
 @torch.inference_mode()
 def _super_resolve(generator, img_bgr, scale, options):
+    if options.upscaleType == "real-cugan":
+        out = _real_cugan_resolve(generator, img_bgr, scale, options.TILE)
+        torch.cuda.empty_cache()
+        return out
+
     height, width = img_bgr.shape[:2]
     tile = options.TILE
     if scale == EXTRA_SCALE:
@@ -269,14 +326,20 @@ def _image_parts(img, name, split_landscape):
 
 
 def _upscale(generator, img, options):
-    sr = _super_resolve(generator, img, INITIAL_SCALE, options)
+    scale = options.initial_scale
+    sr = _super_resolve(generator, img, scale, options)
+    if scale == EXTRA_SCALE:
+        # Real-CUGAN levels 1 and 2 have no native 4x checkpoint.
+        sr = _super_resolve(generator, sr, scale, options)
     if options.APISR_REPEAT_2X and sr.shape[1] <= options.OUT_WIDTH:
-        repeat_generator = get_generator(EXTRA_SCALE, options.APISR_FP16)
+        repeat_generator = generator if scale == EXTRA_SCALE else get_generator(
+            EXTRA_SCALE, options.APISR_FP16, options.upscaleType, options.noiseLevel,
+        )
         while sr.shape[1] <= options.OUT_WIDTH:
             width = sr.shape[1]
             sr = _super_resolve(repeat_generator, sr, EXTRA_SCALE, options)
             if sr.shape[1] <= width:
-                raise RuntimeError("APISR 2x pass did not increase the image width")
+                raise RuntimeError(f"{options.upscaleType} 2x pass did not increase the image width")
     return sr
 
 
@@ -324,7 +387,7 @@ def handler(job):
         print(f"[apisr] 收到 {len(urls)} 張，只處理前 {options.MAX_IMAGES} 張", flush=True)
         urls = urls[:options.MAX_IMAGES]
 
-    generator = get_generator(INITIAL_SCALE, options.APISR_FP16)
+    generator = get_generator(options.initial_scale, options.APISR_FP16, options.upscaleType, options.noiseLevel)
     results = {}
     errors = {}
     positions = count(1)
@@ -369,11 +432,22 @@ def handler(job):
 
 def smoke_test():
     for scale in (INITIAL_SCALE, EXTRA_SCALE):
-        generator = _create_generator("cpu", scale, False)
+        generator = _create_generator("cpu", scale, False, "apisr")
         with torch.inference_mode():
             output = generator(torch.zeros(1, 3, 8, 8))
         if output.shape != (1, 3, 8 * scale, 8 * scale) or not torch.isfinite(output).all():
             raise RuntimeError(f"APISR {scale}x inference smoke test failed")
+
+        for noise_level in REAL_CUGAN_NOISE_LEVELS[scale]:
+            generator = _create_generator("cpu", scale, False, "real-cugan", noise_level)
+            for tile in (0, 24):
+                # Exercise small/odd inputs and native tiling without a GPU.
+                source = np.zeros((15, 33, 3), dtype=np.uint8)
+                output = _real_cugan_resolve(generator, source, scale, tile)
+                if output.shape != (15 * scale, 33 * scale, 3) or output.dtype != np.uint8:
+                    raise RuntimeError(
+                        f"Real-CUGAN {scale}x inference smoke test failed (noiseLevel={noise_level}, tile={tile})"
+                    )
 
     with tempfile.TemporaryDirectory(prefix="apisr_smoke_") as work_dir:
         source = os.path.join(work_dir, "source.png")
@@ -383,12 +457,11 @@ def smoke_test():
             if os.path.getsize(path) == 0:
                 raise RuntimeError(f"Empty encoded output: {path}")
             _run([IM_BIN, path, "null:"])
-    print("[apisr] CPU model inference and JPEG/AVIF smoke test passed", flush=True)
+    print("APISR and Real-CUGAN CPU inference and JPEG/AVIF smoke test passed", flush=True)
 
 
 if __name__ == "__main__":
     if sys.argv[1:] == ["--smoke-test"]:
         smoke_test()
     else:
-        get_generator(INITIAL_SCALE, JobOptions().APISR_FP16)
         runpod.serverless.start({"handler": handler})

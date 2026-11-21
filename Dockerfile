@@ -6,7 +6,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PATH=/opt/venv/bin:${PATH} \
     APISR_ROOT=/app/APISR \
     APISR_WEIGHT=/app/APISR/pretrained/4x_APISR_RRDB_GAN_generator.pth \
-    APISR_WEIGHT_2X=/app/APISR/pretrained/2x_APISR_RRDB_GAN_generator.pth
+    APISR_WEIGHT_2X=/app/APISR/pretrained/2x_APISR_RRDB_GAN_generator.pth \
+    REAL_CUGAN_ROOT=/app/Real-CUGAN
 
 # ImageMagick + libheif/libaom 讓 AVIF 編碼可用
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -20,6 +21,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
         curl \
         git \
+        unzip \
         wget \
     && rm -rf /var/lib/apt/lists/*
 
@@ -39,6 +41,20 @@ RUN mkdir -p "${APISR_ROOT}/pretrained" \
     && wget -q -O "${APISR_WEIGHT_2X}" \
        https://github.com/Kiteretsu77/APISR/releases/download/v0.1.0/2x_APISR_RRDB_GAN_generator.pth \
     && ls -lh "${APISR_WEIGHT}" "${APISR_WEIGHT_2X}"
+
+# Bundle the official Real-CUGAN implementation and 2x/4x weights.
+RUN mkdir -p "${REAL_CUGAN_ROOT}" \
+    && upstream=https://raw.githubusercontent.com/bilibili/ailab/2799af78ef105b414cc4b796c67c8511acdcdf6f/Real-CUGAN \
+    && curl -fsSL "${upstream}/upcunet_v3.py" -o "${REAL_CUGAN_ROOT}/upcunet_v3.py" \
+    && curl -fsSL "${upstream}/LICENSE" -o "${REAL_CUGAN_ROOT}/LICENSE" \
+    && curl -fsSL https://github.com/bilibili/ailab/releases/download/Real-CUGAN/updated_weights.zip \
+       -o /tmp/real-cugan-weights.zip \
+    && echo '99a8ce2e4a6ce0548668879f148b3db3e143201d3df42c825a4143490396da53  /tmp/real-cugan-weights.zip' | sha256sum -c - \
+    && unzip -j /tmp/real-cugan-weights.zip \
+       'updated_weights/up2x-latest-no-denoise.pth' 'updated_weights/up4x-latest-no-denoise.pth' \
+       'updated_weights/up2x-latest-denoise[123]x.pth' 'updated_weights/up4x-latest-denoise3x.pth' \
+       -d "${REAL_CUGAN_ROOT}" \
+    && rm /tmp/real-cugan-weights.zip
 
 RUN python3 -m venv /opt/venv \
     && python -m pip install --upgrade pip \

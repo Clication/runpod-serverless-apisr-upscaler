@@ -35,6 +35,34 @@
       "timeout": 180000
     },
     {
+      "name": "real_cugan_repeat_2x_until_width_exceeds_target",
+      "input": {
+        "upscaleType": "real-cugan",
+        "noiseLevel": 3,
+        "PRE_MAX_SIDE": 32,
+        "OUT_WIDTH": 256,
+        "TILE": 127,
+        "APISR_REPEAT_2X": true,
+        "images": [
+          "https://raw.githubusercontent.com/Kiteretsu77/APISR/main/__assets__/lr_inputs/naruto.jpg"
+        ]
+      },
+      "timeout": 180000
+    },
+    {
+      "name": "real_cugan_denoise_level_2_with_two_initial_passes",
+      "input": {
+        "upscaleType": "real-cugan",
+        "noiseLevel": 2,
+        "PRE_MAX_SIDE": 32,
+        "OUT_WIDTH": 128,
+        "images": [
+          "https://raw.githubusercontent.com/Kiteretsu77/APISR/main/__assets__/lr_inputs/naruto.jpg"
+        ]
+      },
+      "timeout": 180000
+    },
+    {
       "name": "alpha_png_gets_flattened",
       "input": {
         "PRE_MAX_SIDE": 512,
