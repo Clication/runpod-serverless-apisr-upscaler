@@ -23,6 +23,19 @@
       "timeout": 300000
     },
     {
+      "name": "manga_image_translator_returns_original_jpeg_and_cleaned_avif",
+      "input": {
+        "cleanerMode": true,
+        "cleanerType": "mangaImageTranslator",
+        "PRE_MAX_SIDE": 512,
+        "OUT_WIDTH": 1024,
+        "images": [
+          "https://raw.githubusercontent.com/VoxelCubes/PanelCleaner/2.11.11/media/demo_bubbles/black_bubble_raw.png"
+        ]
+      },
+      "timeout": 300000
+    },
+    {
       "name": "multi_image_batch",
       "input": {
         "PRE_MAX_SIDE": 512,

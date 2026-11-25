@@ -3,7 +3,7 @@
 # APISR and Real-CUGAN on RunPod Serverless
 
 Choose APISR or [Real-CUGAN](https://github.com/bilibili/ailab/tree/main/Real-CUGAN) for 4× anime image super-resolution with JPEG and AVIF output, resized to 2048 pixels wide by default.
-Optionally use [Panel Cleaner](https://github.com/VoxelCubes/PanelCleaner) to remove text from the AVIF version.
+Optionally use [Panel Cleaner](https://github.com/VoxelCubes/PanelCleaner) or [Manga Image Translator](https://github.com/zyddnys/manga-image-translator) to remove text from the AVIF version.
 
 ## CUDA 13.2
 
@@ -28,7 +28,8 @@ Set your RunPod Serverless endpoint's container image to the pushed tag.
 Keep the image's default command. Model weights are downloaded during the
 build, so workers load them locally when requested. The image includes the
 official Real-CUGAN 2× and 4× no-denoise and denoise variants used below, plus
-Panel Cleaner's detection, OCR, and inpainting models.
+Panel Cleaner's detection, OCR, and inpainting models and Manga Image Translator's
+LaMa inpainting model. The cleaners share the Comic Text Detector weights.
 
 The build checks dependency consistency, the PyTorch CUDA version, real
 checkpoint loading, small CPU inferences for both backends at 2× and 4×, and JPEG/AVIF encoding and decoding.
@@ -45,6 +46,7 @@ Put processing options alongside `images` inside the RunPod `input` object:
     "upscaleType": "real-cugan",
     "noiseLevel": 2,
     "cleanerMode": true,
+    "cleanerType": "mangaImageTranslator",
     "OUT_WIDTH": 2048,
     "APISR_REPEAT_2X": true,
     "SPLIT_HORI_IMAGE_TO_HALF": true,
@@ -64,7 +66,8 @@ options are no longer read. `APISR_ROOT`, `APISR_WEIGHT`, `APISR_WEIGHT_2X`, and
 | --- | --- | --- |
 | `upscaleType` | `"apisr"` | `"apisr"` or `"real-cugan"`. The selected backend handles the initial 4× pass and every optional 2× pass. |
 | `noiseLevel` | `0` | Real-CUGAN denoising: `0` off, `1` mild, `2` medium, `3` strong. Nonzero values require `upscaleType: "real-cugan"`. |
-| `cleanerMode` | `false` | When `true`, run Panel Cleaner on the upscaled image before encoding the AVIF. The JPEG stays uncleaned. |
+| `cleanerMode` | `false` | When `true`, clean text from the upscaled image before encoding the AVIF. The JPEG stays uncleaned. |
+| `cleanerType` | `"panelCleaner"` | `"panelCleaner"` or `"mangaImageTranslator"`. Only selects a backend when `cleanerMode` is `true`. Manga Image Translator runs local detection and inpainting only; it does not translate or render new text. |
 | `OUT_WIDTH` | `2048` | Final width in pixels; ImageMagick preserves aspect ratio. |
 | `APISR_REPEAT_2X` | `false` | After the 4× pass, apply the selected backend's 2× model while the current width is less than or equal to `OUT_WIDTH`. Then resize to exactly `OUT_WIDTH`. |
 | `SPLIT_HORI_IMAGE_TO_HALF` | `false` | Split landscape images before upscaling, with the right half returned first. |
@@ -111,7 +114,7 @@ than shifting later results.
 With `cleanerMode: true`, `jpeg` is the uncleaned upscale and `avif` is the
 text-cleaned upscale. With `false` (or omitted), both are uncleaned. Both
 formats are resized to `OUT_WIDTH` in either mode. Some text may remain if
-Panel Cleaner cannot remove it. A cleaner failure is reported under `errors`
+the selected cleaner cannot remove it. A cleaner failure is reported under `errors`
 at the corresponding image index.
 
 The same input can be sent in a RunPod endpoint test request.
