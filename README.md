@@ -118,10 +118,15 @@ the selected cleaner cannot remove it. A cleaner failure is reported under `erro
 at the corresponding image index.
 
 On large images, Manga Image Translator scans overlapping crops as well as the
-whole image to catch small lettering. It pads the resulting mask and preserves
-thin strokes when shrinking it for inpainting to reduce leftover outlines. The
-additional detection passes take longer than a single whole-image scan and
-may occasionally pick up linework.
+whole image to catch small lettering. After padding the text mask, it adds
+bright outlines that touch detected strokes and small enclosed white cores
+before inpainting. It also preserves thin strokes when shrinking the mask.
+The additional detection passes take longer than a single whole-image scan
+and may occasionally pick up linework.
+
+When running `manga_cleaner.py` directly, pass `--mask-overlay overlay.png`
+to see the padded mask in green and the added outline/core pixels in magenta
+on the upscaled source. The RunPod response does not include the overlay.
 
 The same input can be sent in a RunPod endpoint test request.
 
