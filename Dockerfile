@@ -89,6 +89,9 @@ ENV HF_HUB_OFFLINE=1
 
 # Bundle only Manga Image Translator's detection and inpainting modules. The
 # upstream entry points import the translation, OCR, and rendering stacks.
+# Use the supplied box threshold instead of upstream's fixed CTD cutoff so
+# whole-page and crop passes can use different confidence thresholds.
+# Keep thin masked strokes from vanishing when LaMa downsamples its input.
 RUN mkdir -p "${MANGA_TRANSLATOR_ROOT}" \
     && git init /tmp/manga-translator-src \
     && git -C /tmp/manga-translator-src fetch --depth 1 https://github.com/zyddnys/manga-image-translator.git 6851ca7e207f76deb2b2317d9e513bc05a4bf8d3 \
@@ -97,6 +100,12 @@ RUN mkdir -p "${MANGA_TRANSLATOR_ROOT}" \
         manga_translator/detection/common.py manga_translator/detection/ctd.py manga_translator/detection/ctd_utils \
         manga_translator/inpainting/common.py manga_translator/inpainting/inpainting_lama_mpe.py \
     && tar -xf /tmp/manga-translator.tar -C "${MANGA_TRANSLATOR_ROOT}" \
+    && ctd="${MANGA_TRANSLATOR_ROOT}/manga_translator/detection/ctd.py" \
+    && grep -q '^[[:space:]]*box_thresh = 0\.6[[:space:]]*$' "$ctd" \
+    && sed -i 's/box_thresh = 0\.6/box_thresh = box_threshold/' "$ctd" \
+    && lama="${MANGA_TRANSLATOR_ROOT}/manga_translator/inpainting/inpainting_lama_mpe.py" \
+    && grep -Fq 'mask = resize_keep_aspect(mask, inpainting_size)' "$lama" \
+    && sed -i 's/mask = resize_keep_aspect(mask, inpainting_size)/mask = (cv2.resize(mask, (image.shape[1], image.shape[0]), interpolation=cv2.INTER_AREA) > 0).astype(np.uint8) * 255/' "$lama" \
     && touch "${MANGA_TRANSLATOR_ROOT}/manga_translator/__init__.py" \
         "${MANGA_TRANSLATOR_ROOT}/manga_translator/detection/__init__.py" \
         "${MANGA_TRANSLATOR_ROOT}/manga_translator/inpainting/__init__.py" \

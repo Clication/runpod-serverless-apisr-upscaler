@@ -117,6 +117,12 @@ formats are resized to `OUT_WIDTH` in either mode. Some text may remain if
 the selected cleaner cannot remove it. A cleaner failure is reported under `errors`
 at the corresponding image index.
 
+On large images, Manga Image Translator scans overlapping crops as well as the
+whole image to catch small lettering. It pads the resulting mask and preserves
+thin strokes when shrinking it for inpainting to reduce leftover outlines. The
+additional detection passes take longer than a single whole-image scan and
+may occasionally pick up linework.
+
 The same input can be sent in a RunPod endpoint test request.
 
 ## Memory Settings
