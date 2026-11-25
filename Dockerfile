@@ -7,7 +7,9 @@ ENV DEBIAN_FRONTEND=noninteractive \
     APISR_ROOT=/app/APISR \
     APISR_WEIGHT=/app/APISR/pretrained/4x_APISR_RRDB_GAN_generator.pth \
     APISR_WEIGHT_2X=/app/APISR/pretrained/2x_APISR_RRDB_GAN_generator.pth \
-    REAL_CUGAN_ROOT=/app/Real-CUGAN
+    REAL_CUGAN_ROOT=/app/Real-CUGAN \
+    XDG_CACHE_HOME=/opt/model-cache \
+    XDG_CONFIG_HOME=/opt/model-config
 
 # ImageMagick + libheif/libaom 讓 AVIF 編碼可用
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -16,6 +18,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libheif-plugin-aomenc \
         libheif-plugin-aomdec \
         libaom3 \
+        libgl1 \
+        libglib2.0-0t64 \
         python3 \
         python3-venv \
         ca-certificates \
@@ -58,15 +62,26 @@ RUN mkdir -p "${REAL_CUGAN_ROOT}" \
 
 RUN python3 -m venv /opt/venv \
     && python -m pip install --upgrade pip \
-    && python -m pip install torch==2.12.0 --index-url https://download.pytorch.org/whl/cu132 \
+    && python -m pip install torch==2.12.0 torchvision==0.27.0 --index-url https://download.pytorch.org/whl/cu132 \
     && python -m pip install \
         "numpy<2" \
-        opencv-python-headless==4.10.0.84 \
+        opencv-python==4.10.0.84 \
         pillow \
+        pcleaner-cli==2.11.11 \
+        simple-lama-inpainting==0.1.1 \
         requests \
         runpod \
         && python -m pip check \
         && python -c "import torch; assert torch.version.cuda == '13.2', torch.version.cuda"
+
+# Fetch both text detectors plus the OCR and inpainting models at build time.
+# The CLI may report a download failure without a nonzero exit code.
+RUN pcleaner-cli load models --both \
+    && test -s "${XDG_CACHE_HOME}/pcleaner/model/comictextdetector.pt" \
+    && test -s "${XDG_CACHE_HOME}/pcleaner/model/comictextdetector.pt.onnx" \
+    && test -s "${XDG_CACHE_HOME}/pcleaner/model/anime-manga-big-lama.pt"
+
+ENV HF_HUB_OFFLINE=1
 
 COPY handler.py /app/handler.py
 

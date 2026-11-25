@@ -11,6 +11,18 @@
       "timeout": 180000
     },
     {
+      "name": "cleaner_mode_returns_original_jpeg_and_cleaned_avif",
+      "input": {
+        "cleanerMode": true,
+        "PRE_MAX_SIDE": 512,
+        "OUT_WIDTH": 1024,
+        "images": [
+          "https://raw.githubusercontent.com/VoxelCubes/PanelCleaner/2.11.11/media/demo_original.png"
+        ]
+      },
+      "timeout": 300000
+    },
+    {
       "name": "multi_image_batch",
       "input": {
         "PRE_MAX_SIDE": 512,

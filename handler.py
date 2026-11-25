@@ -1,10 +1,10 @@
 """
 RunPod Serverless handler
-APISR or Real-CUGAN 4x (native or two 2x passes) -> optional repeated 2x -> JPEG + AVIF
+APISR or Real-CUGAN 4x (native or two 2x passes) -> optional repeated 2x -> JPEG + optionally cleaned AVIF
 
 輸入:
     {"input": ["https://.../a.jpg", "https://.../b.png"]}
-    {"input": {"images": ["https://.../a.jpg"]}}
+    {"input": {"images": ["https://.../a.jpg"], "cleanerMode": true}}
 
 輸出:
     {"0001": {"jpeg": "<b64>", "avif": "<b64>"}, "0002": {...}}
@@ -48,12 +48,14 @@ EXTRA_SCALE = 2
 REAL_CUGAN_NOISE_LEVELS = {INITIAL_SCALE: (0, 3), EXTRA_SCALE: (0, 1, 2, 3)}
 TILE_OVERLAP = 16
 DL_TIMEOUT = (10, 90)
+PANEL_CLEANER_TIMEOUT = 600
 
 
 @dataclass(frozen=True)
 class JobOptions:
     upscaleType: str = "apisr"
     noiseLevel: int = 0
+    cleanerMode: bool = False
     OUT_WIDTH: int = 2048
     SPLIT_HORI_IMAGE_TO_HALF: bool = False
     PRE_MAX_SIDE: int = 0
@@ -291,23 +293,49 @@ def _super_resolve(generator, img_bgr, scale, options):
     return cv2.cvtColor(out, cv2.COLOR_RGB2BGR)
 
 
-def _encode(src_png, work_dir, base, options):
+def _clean_png(src_png, work_dir):
+    # Panel Cleaner clears its intermediate cache each run. Isolate both the
+    # cache and exports so concurrent requests or split halves cannot mix.
+    clean_dir = tempfile.mkdtemp(prefix="panel_cleaner_", dir=os.path.abspath(work_dir))
+    export_dir = os.path.join(clean_dir, "export")
+    cmd = [
+        "pcleaner-cli", "clean", os.path.abspath(src_png),
+        "--output_dir", export_dir, "--save-only-cleaned", "--profile=builtin", "--hide-analytics",
+    ]
+    try:
+        proc = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=PANEL_CLEANER_TIMEOUT,
+            env={**os.environ, "GUARDED_CLEANER_CACHE": clean_dir},
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"Panel Cleaner timed out after {PANEL_CLEANER_TIMEOUT} seconds") from exc
+    if proc.returncode != 0:
+        detail = (proc.stderr.strip() or proc.stdout.strip())[-2000:]
+        raise RuntimeError(f"Panel Cleaner failed (exit {proc.returncode}): {detail}")
+
+    stem = os.path.splitext(os.path.basename(src_png))[0]
+    cleaned_png = os.path.join(export_dir, f"{stem}_clean.png")
+    if not os.path.isfile(cleaned_png) or os.path.getsize(cleaned_png) == 0:
+        raise RuntimeError("Panel Cleaner did not export a cleaned PNG")
+    return cleaned_png
+
+
+def _encode(src_png, work_dir, base, options, avif_src_png=None):
     jpeg_path = os.path.join(work_dir, base + ".jpg")
     avif_path = os.path.join(work_dir, base + ".avif")
     common = [
-        IM_BIN, src_png,
         # "-auto-orient",
         # "-filter", "Lanczos",
         "-resize", f"{options.OUT_WIDTH}x",
         # "-depth", "8",
         # "-strip",
     ]
-    _run(common + [
+    _run([IM_BIN, src_png] + common + [
         "-background", "white", "-alpha", "remove", "-alpha", "off",
         "-sampling-factor", "4:2:0", "-interlace", "JPEG",
         "-quality", str(options.JPEG_QUALITY), jpeg_path,
     ])
-    _run(common + [
+    _run([IM_BIN, avif_src_png or src_png] + common + [
         "-quality", str(options.AVIF_QUALITY),
         "-define", f"heic:speed={options.AVIF_SPEED}",
         avif_path,
@@ -364,12 +392,19 @@ def _process_image(generator, img, work_dir, name, options):
             )
 
     sr = _upscale(generator, img, options)
-    sr_png = os.path.join(work_dir, f"{name}.png")
+    # Panel Cleaner's export naming expects a simple stem. User-derived names
+    # may contain dots or exceed its limits once it adds intermediate suffixes.
+    sr_png = os.path.join(work_dir, "upscaled.png" if options.cleanerMode else f"{name}.png")
     if not cv2.imwrite(sr_png, sr, [cv2.IMWRITE_PNG_COMPRESSION, 1]):
         raise RuntimeError("無法寫入超解析影像")
     del sr
 
-    jpeg_path, avif_path = _encode(sr_png, work_dir, name, options)
+    cleaned_png = None
+    if options.cleanerMode:
+        # Release cached upscaling allocations before the cleaner opens its own CUDA context.
+        torch.cuda.empty_cache()
+        cleaned_png = _clean_png(sr_png, work_dir)
+    jpeg_path, avif_path = _encode(sr_png, work_dir, name, options, avif_src_png=cleaned_png)
     return {"jpeg": _b64(jpeg_path), "avif": _b64(avif_path)}
 
 
